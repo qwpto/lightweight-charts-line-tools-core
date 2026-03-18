@@ -65,6 +65,9 @@ export class InteractionManager<HorzScaleItem> {
 	private _isDrag: boolean = false;
 	private _isShiftKeyDown: boolean = false;
 
+	// Lock State — when true, all mouse interactions are suppressed
+	private _locked: boolean = false;
+
 	/**
 	 * Initializes the Interaction Manager, setting up all internal references and subscribing
 	 * to necessary DOM and Lightweight Charts events.
@@ -145,6 +148,25 @@ export class InteractionManager<HorzScaleItem> {
 		this._currentToolCreating = tool;
 
 		//console.log(`[InteractionManager] Set _currentToolCreating to ${tool?.id() || 'null'}`);
+	}
+
+	/**
+	 * Sets the global lock state for all drawing interactions.
+	 *
+	 * When locked, all mouse interactions (creation, selection, editing, dragging,
+	 * hovering) are suppressed. Tools remain visible but cannot be interacted with.
+	 *
+	 * @param locked - `true` to lock all interactions, `false` to unlock.
+	 */
+	public setLocked(locked: boolean): void {
+		this._locked = locked;
+	}
+
+	/**
+	 * Returns the current lock state.
+	 */
+	public isLocked(): boolean {
+		return this._locked;
 	}
 
 	/**
@@ -313,6 +335,7 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleMouseDown(event: MouseEvent): void {
+		if (this._locked) { return; }
 		const point = this._eventToPoint(event);
 		if (!point) { return; }
 
@@ -432,6 +455,7 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleMouseMove(event: MouseEvent): void {
+		if (this._locked) { return; }
 		const point = this._eventToPoint(event);
 		if (!point) { return; }
 
@@ -669,6 +693,7 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleMouseUp(event: MouseEvent): void {
+		if (this._locked) { return; }
 
 		const point = this._eventToPoint(event);
 
@@ -1083,6 +1108,7 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleDblClick(params: MouseEventParams<HorzScaleItem>): void {
+		if (this._locked) { return; }
 		const point = params.point ? new Point(params.point.x, params.point.y) : null;
 		if (!point) return;
 
@@ -1130,6 +1156,7 @@ export class InteractionManager<HorzScaleItem> {
 	 * @private
 	 */
 	private _handleCrosshairMove(params: MouseEventParams<HorzScaleItem>): void {
+		if (this._locked) { return; }
 		// --- Ghosting Logic ---
 		const toolBeingCreated = this._currentToolCreating;
 		if (toolBeingCreated) {
