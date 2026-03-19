@@ -111,9 +111,20 @@ export class InteractionManager<HorzScaleItem> {
 	 * // Used by LineToolsCorePlugin to position the crosshair
 	 * const logicalPoint = manager.screenPointToLineToolPoint(new Point(x, y));
 	 */
-	public screenPointToLineToolPoint(screenPoint: Point): LineToolPoint | null {
+	/**
+	 * @param screenPoint - Coordinate point to convert.
+	 * @param paneRelative - If true, screenPoint.y is already relative to the active
+	 *   pane (e.g. from LWC crosshair events). If false (default), screenPoint.y is
+	 *   relative to the chart element and needs pane-offset adjustment.
+	 */
+	public screenPointToLineToolPoint(screenPoint: Point, paneRelative: boolean = false): LineToolPoint | null {
 		const timeScale = this._chart.timeScale();
-		const price = this._series.coordinateToPrice(screenPoint.y as Coordinate);
+
+		// coordinateToPrice() expects Y relative to the pane the series is in.
+		// DOM events (_eventToPoint) give chart-element-relative Y → subtract offset.
+		// LWC crosshair events give pane-relative Y → use directly.
+		const paneRelativeY = paneRelative ? screenPoint.y : (screenPoint.y - this._getActivePaneYOffset());
+		const price = this._series.coordinateToPrice(paneRelativeY as Coordinate);
 
 		const logical = timeScale.coordinateToLogical(screenPoint.x as Coordinate);
 	 
@@ -146,8 +157,6 @@ export class InteractionManager<HorzScaleItem> {
 	 */
 	public setCurrentToolCreating(tool: BaseLineTool<HorzScaleItem> | null): void {
 		this._currentToolCreating = tool;
-
-		//console.log(`[InteractionManager] Set _currentToolCreating to ${tool?.id() || 'null'}`);
 	}
 
 	/**
@@ -189,10 +198,12 @@ export class InteractionManager<HorzScaleItem> {
 	 */
 	private _subscribeToChartEvents(): void {
 		const chartElement = this._chart.chartElement();
-		
+
 		// 1. Raw DOM Events for Drag/Click Detection and Editing
-		chartElement.addEventListener('mousedown', this._handleMouseDown.bind(this));
-		chartElement.addEventListener('mousemove', this._handleMouseMove.bind(this));
+		// Use capturing phase on chartElement so we intercept events from ALL panes
+		// (including indicator panes whose internal widgets may stop propagation)
+		chartElement.addEventListener('mousedown', this._handleMouseDown.bind(this), true);
+		chartElement.addEventListener('mousemove', this._handleMouseMove.bind(this), true);
 		window.addEventListener('mouseup', this._handleMouseUp.bind(this)); 
 		
 		// 2. LWC API Events for Ghosting/Hover/DBLClick
@@ -343,7 +354,7 @@ export class InteractionManager<HorzScaleItem> {
 		this._isDrag = false;
 		this._mouseDownPoint = point;
 		this._mouseDownTime = performance.now();
-		
+
 		// --- 1. Tool Creation START/CONTINUATION ---
 		if (this._currentToolCreating) {
 			this._creationTool = this._currentToolCreating; // The tool instance must exist here
@@ -855,7 +866,6 @@ export class InteractionManager<HorzScaleItem> {
                 // --- START SYNCHRONOUS LOGICAL SNAP FIX ---
 				// 1. Convert the (potentially) constrained screen point into a logical point
 				let finalLogicalPoint: LineToolPoint | null = this.screenPointToLineToolPoint(finalScreenPoint);
-				console.log('finalLogicalPoint after let', JSON.parse(JSON.stringify(finalLogicalPoint)))
 
                 // Check if we are placing P1 (point index 1) which is where the constraint applies
                 const isP1Click = tool.getPermanentPointsCount() === 1; 
@@ -897,7 +907,6 @@ export class InteractionManager<HorzScaleItem> {
 				//GOTCHA i suspect that since the ghost creation of a tool for point1 (then 2nd point) actually modifies _points.
 				//meaning the ghost does inject the ghost point into _points index 1 (2nd entry), so if we then tool.addPoint, then the constrained point
 				// would be actually index 2 (3rd entry) in _points which is not what we want.
-				console.log('finalLogicalPoint before if statement', JSON.parse(JSON.stringify(finalLogicalPoint)))
 				if (finalLogicalPoint) {
 					tool.addPoint(finalLogicalPoint);
 				} else {
@@ -1166,7 +1175,8 @@ export class InteractionManager<HorzScaleItem> {
             if (rawScreenPoint && toolBeingCreated.pointsCount === 1) {
                 // Single point tools are immediately completed on the first click.
                 // We use setLastPoint to visualize the *final* tool location pre-click.
-                const logicalPoint = this.screenPointToLineToolPoint(rawScreenPoint);
+                // params.point from crosshair events is pane-relative.
+                const logicalPoint = this.screenPointToLineToolPoint(rawScreenPoint, true);
                 if (logicalPoint) {
                     toolBeingCreated.setLastPoint(logicalPoint);
                     this._plugin.requestUpdate();
@@ -1225,7 +1235,8 @@ export class InteractionManager<HorzScaleItem> {
 			}
 
 			if (finalScreenPoint) {
-				const logicalPoint = this.screenPointToLineToolPoint(finalScreenPoint);
+				// Crosshair event points are pane-relative
+				const logicalPoint = this.screenPointToLineToolPoint(finalScreenPoint, true);
 
 				if (logicalPoint) {
 					// We use setLastPoint for ghosting until the final point is committed.
@@ -1273,11 +1284,16 @@ export class InteractionManager<HorzScaleItem> {
 			if(!tool.options().visible) {
 				continue;
 			}
- 
-			const hitResult = tool._internalHitTest(point.x, point.y);
+
+			// Adjust Y to be pane-relative for the tool's pane, since the tool's
+			// rendered coordinates are pane-relative but point.y is chart-relative.
+			const toolPaneOffset = this._getPaneYOffsetForTool(tool);
+			const adjustedY = point.y - toolPaneOffset;
+
+			const hitResult = tool._internalHitTest(point.x, adjustedY as Coordinate);
 
 			if (hitResult) {
-				return { 
+				return {
 					tool: tool,
 					// The data() method gives us the payload, which is { pointIndex, cursorType }
 					pointIndex: hitResult.data()?.pointIndex ?? null,
@@ -1304,6 +1320,46 @@ export class InteractionManager<HorzScaleItem> {
 			this._selectedTool = null;
 			this._plugin.requestUpdate();
 		}
+	}
+
+	/**
+	 * Returns the Y offset (in CSS pixels) of the pane that contains `this._series`,
+	 * measured from the top of the chart element.
+	 * For pane 0 this returns 0, so existing single-pane behaviour is unaffected.
+	 */
+	private _getActivePaneYOffset(): number {
+		try {
+			const chartRect = this._chart.chartElement().getBoundingClientRect();
+			const panes = (this._chart as any).panes?.();
+			if (!panes) return 0;
+			for (const pane of panes) {
+				const series = pane.getSeries?.();
+				if (series && series.indexOf(this._series) !== -1) {
+					const paneEl = pane.getHTMLElement?.();
+					if (paneEl) {
+						return paneEl.getBoundingClientRect().top - chartRect.top;
+					}
+					break;
+				}
+			}
+		} catch { /* fallback */ }
+		return 0;
+	}
+
+	/**
+	 * Returns the Y offset of the pane a specific tool is rendered in.
+	 * Used by _hitTest to convert chart-relative Y to pane-relative Y.
+	 */
+	private _getPaneYOffsetForTool(tool: BaseLineTool<HorzScaleItem>): number {
+		try {
+			const chartRect = this._chart.chartElement().getBoundingClientRect();
+			const pane = tool.getPane();
+			const paneEl = pane?.getHTMLElement?.();
+			if (paneEl) {
+				return paneEl.getBoundingClientRect().top - chartRect.top;
+			}
+		} catch { /* fallback — tool might not be attached yet */ }
+		return 0;
 	}
 
 	/**

@@ -70,7 +70,11 @@ export class CompositeRenderer<HorzScaleItem> implements IPaneRenderer {
 			return;
 		}
 		this._renderers.forEach((renderer: IPaneRenderer) => {
-			renderer.draw(target);
+			try {
+				renderer.draw(target);
+			} catch (e) {
+				console.warn('[CompositeRenderer] Error in renderer.draw:', e);
+			}
 		});
 	}
 

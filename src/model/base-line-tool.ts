@@ -370,7 +370,14 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 			console.warn(`[BaseLineTool] Tool ${this.id()} attached to a series not found in any pane. This primitive relies on IPaneApi access.`);
 		}
 
-		console.log(`Tool ${this.toolType} with ID ${this.id()} attached to series.`);
+		// Propagate the new series to all pane views so they use the correct
+		// price scale for coordinate conversions (critical for multi-pane).
+		for (const pv of this._paneViews) {
+			if (typeof (pv as any).updateSeries === 'function') {
+				(pv as any).updateSeries(param.series);
+			}
+		}
+
 	}
 
 	/**
@@ -432,7 +439,6 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 	 * @returns void
 	 */
 	public detached(): void {
-		console.log(`[BaseLineTool] Tool ${this.id()} detached from series.`);
 
 		// Nullify references to LWCharts APIs to prevent memory leaks / stale closures.
 		// This is important because chart/series APIs might hold references back to the primitive.
@@ -1048,10 +1054,10 @@ export abstract class BaseLineTool<HorzScaleItem> extends PriceDataSource<HorzSc
 
 		// Clear references to views and internal data
 		this._paneViews.forEach(paneView => {
-			const renderer = paneView.renderer();
-			if (renderer && renderer.clear) { // Check if the renderer has a clear method
-				renderer.clear();
-			}
+			try {
+				const renderer = paneView.renderer();
+				if (renderer && renderer.clear) { renderer.clear(); }
+			} catch { /* chart/series may already be detached */ }
 		});
 		(this._paneViews as any) = []; // Breaks references to renderers and views
 		(this._points as any) = [];
